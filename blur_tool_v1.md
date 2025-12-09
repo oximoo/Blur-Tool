@@ -152,111 +152,147 @@ Just tell me! 🚀
 ## Full Python Script (blur_tool.py)
 ```python
 import tkinter as tk
-import win32gui, win32con
-import ctypes
+from PIL import ImageGrab, ImageTk, Image
 import numpy as np
 import cv2
-from PIL import ImageGrab, ImageTk
+import win32gui
+import win32con
 import keyboard
-import threading
-import time
+import os
+import ctypes
+
 
 class BlurTool:
     def __init__(self):
+        # Create main window
         self.root = tk.Tk()
-        self.root.attributes("-fullscreen", True)
-        self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.3)
-        self.root.config(bg="black")
-        self.root.withdraw() 
+        self.root.attributes('-fullscreen', True, '-topmost', True, '-alpha', 0.01)
 
-        self.active = False
-        self.can_draw = True
+        # Make the window click-through
+        hwnd = win32gui.GetWindow(self.root.winfo_id(), win32con.GW_HWNDNEXT)
+        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE,
+                               win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) | win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT)
+
+        # Variables
+        self.drawing_enabled = True
+        self.tool_enabled = True
+        self.start_x, self.start_y = None, None
         self.rectangles = []
-        self.labels = []
-        self.drawing = False
-        self.start_x = 0
-        self.start_y = 0
-        self.rect = None
-        self.label_counter = 1
+        self.blur_windows = []
 
-        self.canvas = tk.Canvas(self.root, bg="", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
+        # Bind events
+        self.root.bind('<Button-1>', self.start_rectangle)
+        self.root.bind('<B1-Motion>', self.draw_rectangle)
+        self.root.bind('<ButtonRelease-1>', self.end_rectangle)
 
-        self.canvas.bind("<ButtonPress-1>", self.on_start)
-        self.canvas.bind("<B1-Motion>", self.on_draw)
-        self.canvas.bind("<ButtonRelease-1>", self.on_release)
-
+        # Hotkeys
         keyboard.add_hotkey("shift+h", self.toggle_tool)
         keyboard.add_hotkey("shift+a", self.toggle_drawing)
         keyboard.add_hotkey("shift+x", self.reset_all)
-        keyboard.add_hotkey("shift+b", self.clear_blur)
+        keyboard.add_hotkey("shift+b", self.remove_blurs)
         keyboard.add_hotkey("esc", self.close_tool)
 
-        threading.Thread(target=self.root.mainloop, daemon=True).start()
+        # Hide console window
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
 
     def toggle_tool(self):
-        if self.active:
-            self.root.withdraw()
+        """Turn the tool on or off (keeps running in the background)."""
+        self.tool_enabled = not self.tool_enabled
+        if self.tool_enabled:
+            self.root.attributes('-alpha', 0.01)
         else:
-            self.root.deiconify()
-        self.active = not self.active
+            self.root.attributes('-alpha', 0)
 
     def toggle_drawing(self):
-        self.can_draw = not self.can_draw
+        """Enable or disable drawing rectangles."""
+        self.drawing_enabled = not self.drawing_enabled
+        if not self.drawing_enabled:
+            # Disable click-through while drawing is off
+            hwnd = win32gui.GetWindow(self.root.winfo_id(), win32con.GW_HWNDNEXT)
+            exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, exstyle & ~win32con.WS_EX_TRANSPARENT)
+        else:
+            # Re-enable click-through
+            hwnd = win32gui.GetWindow(self.root.winfo_id(), win32con.GW_HWNDNEXT)
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE,
+                                   win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) | win32con.WS_EX_TRANSPARENT)
 
-    def on_start(self, event):
-        if not self.can_draw:
+    def start_rectangle(self, event):
+        """Start drawing a rectangle."""
+        if not self.tool_enabled or not self.drawing_enabled:
             return
-        self.drawing = True
-        self.start_x = event.x
-        self.start_y = event.y
-        self.rect = self.canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="red", width=3)
+        self.start_x, self.start_y = event.x, event.y
 
-    def on_draw(self, event):
-        if self.drawing:
-            self.canvas.coords(self.rect, self.start_x, self.start_y, event.x, event.y)
-
-    def on_release(self, event):
-        if not self.drawing:
+    def draw_rectangle(self, event):
+        """Draw the rectangle dynamically."""
+        if not self.tool_enabled or not self.drawing_enabled:
             return
-        self.drawing = False
-        x1, y1, x2, y2 = self.canvas.coords(self.rect)
-        self.apply_blur(int(x1), int(y1), int(x2), int(y2))
-        label = self.canvas.create_text(x1+10, y1+10, text=str(self.label_counter), fill="red", anchor="nw", font=("Arial", 18, "bold"))
-        self.label_counter += 1
-        self.rectangles.append(self.rect)
-        self.labels.append(label)
-        self.rect = None
+        self.remove_last_rectangle()
+        rect = self.root.create_rectangle(self.start_x, self.start_y, event.x, event.y, outline="red", width=2)
+        self.rectangles.append(rect)
+
+    def end_rectangle(self, event):
+        """Finish drawing and apply blur."""
+        if not self.tool_enabled or not self.drawing_enabled:
+            return
+        x1, y1 = min(self.start_x, event.x), min(self.start_y, event.y)
+        x2, y2 = max(self.start_x, event.x), max(self.start_y, event.y)
+        self.apply_blur(x1, y1, x2, y2)
+
+    def remove_last_rectangle(self):
+        """Remove the last rectangle drawn (while drawing)."""
+        if self.rectangles:
+            self.root.delete(self.rectangles[-1])
+            self.rectangles.pop()
 
     def apply_blur(self, x1, y1, x2, y2):
-        img = np.array(ImageGrab.grab())
-        sub = img[y1:y2, x1:x2]
-        blur = cv2.GaussianBlur(sub, (51, 51), 0)
-        img[y1:y2, x1:x2] = blur
-        cv2.imshow("Blurred", img)
-        cv2.waitKey(1)
+        """Capture the screen and apply blur to the selected area."""
+        screenshot = ImageGrab.grab()
+        cropped = screenshot.crop((x1, y1, x2, y2))
+        blurred = cv2.GaussianBlur(np.array(cropped), (25, 25), 0)
+        blurred_image = Image.fromarray(blurred)
+
+        # Create a new window for the blurred region
+        blur_window = tk.Toplevel(self.root)
+        blur_window.geometry(f"{x2-x1}x{y2-y1}+{x1}+{y1}")
+        blur_window.overrideredirect(True)
+        blur_window.attributes("-topmost", True)
+        blur_window.attributes("-alpha", 1.0)
+
+        photo = ImageTk.PhotoImage(blurred_image)
+        label = tk.Label(blur_window, image=photo)
+        label.image = photo
+        label.pack()
+
+        self.blur_windows.append(blur_window)
 
     def reset_all(self):
-        for r in self.rectangles:
-            self.canvas.delete(r)
-        for l in self.labels:
-            self.canvas.delete(l)
+        """Reset all blurred areas and rectangles."""
+        for rect in self.rectangles:
+            self.root.delete(rect)
         self.rectangles.clear()
-        self.labels.clear()
-        self.label_counter = 1
-        cv2.destroyAllWindows()
 
-    def clear_blur(self):
-        cv2.destroyAllWindows()
+        for blur_window in self.blur_windows:
+            blur_window.destroy()
+        self.blur_windows.clear()
+
+    def remove_blurs(self):
+        """Remove all blur areas and reset the screen to normal."""
+        for blur_window in self.blur_windows:
+            blur_window.destroy()
+        self.blur_windows.clear()
 
     def close_tool(self):
+        """Close the tool and reset all areas."""
         self.reset_all()
-        cv2.destroyAllWindows()
         self.root.destroy()
-        raise SystemExit
+
+    def run(self):
+        """Run the Tkinter event loop."""
+        self.root.mainloop()
+
 
 if __name__ == "__main__":
-    BlurTool()
+    BlurTool().run()
 ```
 
